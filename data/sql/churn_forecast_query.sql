@@ -4,21 +4,14 @@ select * from churn_forecast_reporting;
 -- MONTH-ON-MONTH CHANGE
 WITH monthly AS (
     SELECT
-        reporting_month,
-        product_group,
-        footprint,
-        reporting_kpi,
+        *,
         SUM(churn_value) AS monthly_churn
     FROM churn_forecast_reporting
     GROUP BY
         reporting_month, product_group, footprint, reporting_kpi
 )
 SELECT
-    reporting_month,
-    product_group,
-    footprint,
-    reporting_kpi,
-    monthly_churn,
+    *,
     monthly_churn
     - LAG(monthly_churn) OVER (
         PARTITION BY product_group, footprint, reporting_kpi
@@ -27,13 +20,8 @@ SELECT
 FROM monthly;
 
 -- MONTH-WISE TREND STATUS
-
 SELECT
-    reporting_month,
-    product_group,
-    footprint,
-    reporting_kpi,
-    monthly_churn,
+    *,
 
     CASE
         WHEN LAG(monthly_churn) OVER (
@@ -61,11 +49,7 @@ ORDER BY reporting_month;
 
 -- ROLLING 3-MONTH CHURN
 SELECT
-    reporting_month,
-    product_group,
-    footprint,
-    reporting_kpi,
-    monthly_churn,
+    *,
 
     SUM(monthly_churn) OVER (
         PARTITION BY product_group, footprint, reporting_kpi
@@ -78,11 +62,7 @@ ORDER BY reporting_month;
 
 -- RELATIVE CHURN CONTRIBUTION %
 SELECT
-    reporting_month,
-    product_group,
-    footprint,
-    reporting_kpi,
-    monthly_churn,
+    *,
 
     ROUND(
         monthly_churn
@@ -101,11 +81,7 @@ ORDER BY reporting_month;
 
 -- NORMALIZED CHURN INDEX
 SELECT
-    reporting_month,
-    product_group,
-    footprint,
-    reporting_kpi,
-    monthly_churn,
+    *,
 
     ROUND(
         monthly_churn
@@ -121,9 +97,7 @@ ORDER BY reporting_month;
 
 -- FORECAST vs ACTUAL DELTA
 SELECT
-    reporting_month,
-    product_group,
-    footprint,
+    *,
 
     SUM(CASE WHEN reporting_kpi = 'FORECAST' THEN monthly_churn END)
     -
@@ -139,11 +113,7 @@ ORDER BY reporting_month;
 
 -- FORECAST VOLATILITY
 SELECT
-    reporting_month,
-    ingestion_date,
-    product_group,
-    footprint,
-    churn_value,
+    *,
 
     ABS(
         churn_value
@@ -160,11 +130,7 @@ ORDER BY reporting_month, ingestion_date;
 
 -- HIGH-RISK MONTH IDENTIFICATION
 SELECT
-    reporting_month,
-    product_group,
-    footprint,
-    reporting_kpi,
-    monthly_churn,
+    *,
 
     CASE
         WHEN monthly_churn >
@@ -177,3 +143,56 @@ SELECT
 
 FROM monthly
 ORDER BY reporting_month;
+
+# Weighted Churn by Product Group
+SELECT
+    *,
+    SUM(churn_value) AS total_churn,
+    SUM(
+        churn_value *
+        CASE
+            WHEN customer_type = 'regular payer' THEN 1.2
+            WHEN customer_type = 'irregular payer' THEN 1.0
+            ELSE 0.8
+        END
+    ) AS weighted_churn
+FROM churn_forecast_reporting
+WHERE reporting_kpi = 'ACTUAL'
+GROUP BY reporting_month, product_group;
+
+#  HIGH-RISK CUSTOMER & PRODUCT SEGMENTS
+SELECT
+    product_group,
+    customer_type,
+    SUM(churn_value) AS churn_volume
+FROM churn_forecast_reporting
+WHERE reporting_kpi = 'ACTUAL'
+  AND customer_type IN ('move', 'churn')
+GROUP BY product_group, customer_type
+ORDER BY churn_volume DESC;
+
+# Identify First Activity Month (Cohort)
+WITH first_activity AS (
+    SELECT
+        product_group,
+        customer_type,
+        MIN(reporting_month) AS cohort_month
+    FROM churn_forecast_reporting
+    WHERE reporting_kpi = 'ACTUAL'
+    GROUP BY product_group, customer_type
+)
+SELECT
+    f.cohort_month,
+    c.reporting_month,
+    c.product_group,
+    c.customer_type,
+    SUM(c.churn_value) AS churn_value
+FROM churn_forecast_reporting c
+JOIN first_activity f
+    ON c.product_group = f.product_group
+   AND c.customer_type = f.customer_type
+GROUP BY
+    f.cohort_month,
+    c.reporting_month,
+    c.product_group,
+    c.customer_type;
